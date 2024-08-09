@@ -49,13 +49,15 @@ class Backend(Generic[_ResourceHandleType]):
             dryrun: bool,
             stream_logs: bool,
             cluster_name: Optional[str] = None,
-            retry_until_up: bool = False) -> Optional[_ResourceHandleType]:
+            retry_until_up: bool = False,
+            image_name: Optional[str] = None,
+    ) -> Optional[_ResourceHandleType]:
         if cluster_name is None:
             cluster_name = sky.backends.backend_utils.generate_cluster_name()
         usage_lib.record_cluster_name_for_current_operation(cluster_name)
         usage_lib.messages.usage.update_actual_task(task)
         return self._provision(task, to_provision, dryrun, stream_logs,
-                               cluster_name, retry_until_up)
+                               cluster_name, retry_until_up, image_name)
 
     @timeline.event
     @usage_lib.messages.usage.update_runtime('sync_workdir')
@@ -87,7 +89,9 @@ class Backend(Generic[_ResourceHandleType]):
                 handle: _ResourceHandleType,
                 task: 'task_lib.Task',
                 detach_run: bool,
-                dryrun: bool = False) -> Optional[int]:
+                dryrun: bool = False,
+                image_name: str = None
+                ) -> Optional[int]:
         """Execute the task on the cluster.
 
         Returns:
@@ -96,7 +100,7 @@ class Backend(Generic[_ResourceHandleType]):
         usage_lib.record_cluster_name_for_current_operation(
             handle.get_cluster_name())
         usage_lib.messages.usage.update_actual_task(task)
-        return self._execute(handle, task, detach_run, dryrun)
+        return self._execute(handle, task, detach_run, dryrun, image_name)
 
     @timeline.event
     def post_execute(self, handle: _ResourceHandleType, down: bool) -> None:
@@ -127,7 +131,9 @@ class Backend(Generic[_ResourceHandleType]):
             dryrun: bool,
             stream_logs: bool,
             cluster_name: str,
-            retry_until_up: bool = False) -> Optional[_ResourceHandleType]:
+            retry_until_up: bool = False,
+            image_name: str = None,
+    ) -> Optional[_ResourceHandleType]:
         raise NotImplementedError
 
     def _sync_workdir(self, handle: _ResourceHandleType, workdir: Path) -> None:
@@ -149,7 +155,9 @@ class Backend(Generic[_ResourceHandleType]):
                  handle: _ResourceHandleType,
                  task: 'task_lib.Task',
                  detach_run: bool,
-                 dryrun: bool = False) -> Optional[int]:
+                 dryrun: bool = False,
+                 image_name: str = None
+                 ) -> Optional[int]:
         raise NotImplementedError
 
     def _post_execute(self, handle: _ResourceHandleType, down: bool) -> None:

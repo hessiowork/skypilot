@@ -27,19 +27,22 @@ logger = sky_logging.init_logger(__name__)
 
 
 def _route_to_cloud_impl(func):
-
     @functools.wraps(func)
     def _wrapper(*args, **kwargs):
         # check the signature to fail early
+        logger.info(f'What is going on????')
         inspect.signature(func).bind(*args, **kwargs)
         if args:
             provider_name = args[0]
             args = args[1:]
         else:
             provider_name = kwargs.pop('provider_name')
+        logger.info(f'Provider name {provider_name}')
 
         module_name = provider_name.lower()
+        logger.info(f'module_name: {module_name}')
         module = globals().get(module_name)
+        logger.info(f'module: {module}')
         assert module is not None, f'Unknown provider: {module_name}'
 
         impl = getattr(module, func.__name__, None)
@@ -57,10 +60,10 @@ def _route_to_cloud_impl(func):
 
 @_route_to_cloud_impl
 def query_instances(
-    provider_name: str,
-    cluster_name_on_cloud: str,
-    provider_config: Optional[Dict[str, Any]] = None,
-    non_terminated_only: bool = True,
+        provider_name: str,
+        cluster_name_on_cloud: str,
+        provider_config: Optional[Dict[str, Any]] = None,
+        non_terminated_only: bool = True,
 ) -> Dict[str, Optional[status_lib.ClusterStatus]]:
     """Query instances.
 
@@ -90,7 +93,7 @@ def bootstrap_instances(
 
 
 @_route_to_cloud_impl
-def run_instances(provider_name: str, region: str, cluster_name_on_cloud: str,
+def run_instances(provider_name: str, region: str, cluster_name_on_cloud: str, image_name: str,
                   config: common.ProvisionConfig) -> common.ProvisionRecord:
     """Start instances with bootstrapped configuration."""
     raise NotImplementedError
@@ -98,10 +101,10 @@ def run_instances(provider_name: str, region: str, cluster_name_on_cloud: str,
 
 @_route_to_cloud_impl
 def stop_instances(
-    provider_name: str,
-    cluster_name_on_cloud: str,
-    provider_config: Dict[str, Any],
-    worker_only: bool = False,
+        provider_name: str,
+        cluster_name_on_cloud: str,
+        provider_config: Dict[str, Any],
+        worker_only: bool = False,
 ) -> None:
     """Stop running instances."""
     raise NotImplementedError
@@ -109,10 +112,10 @@ def stop_instances(
 
 @_route_to_cloud_impl
 def terminate_instances(
-    provider_name: str,
-    cluster_name_on_cloud: str,
-    provider_config: Dict[str, Any],
-    worker_only: bool = False,
+        provider_name: str,
+        cluster_name_on_cloud: str,
+        provider_config: Dict[str, Any],
+        worker_only: bool = False,
 ) -> None:
     """Terminate running or stopped instances."""
     raise NotImplementedError
@@ -120,10 +123,10 @@ def terminate_instances(
 
 @_route_to_cloud_impl
 def open_ports(
-    provider_name: str,
-    cluster_name_on_cloud: str,
-    ports: List[str],
-    provider_config: Optional[Dict[str, Any]] = None,
+        provider_name: str,
+        cluster_name_on_cloud: str,
+        ports: List[str],
+        provider_config: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Open ports for inbound traffic."""
     raise NotImplementedError
@@ -131,11 +134,11 @@ def open_ports(
 
 @_route_to_cloud_impl
 def cleanup_ports(
-    provider_name: str,
-    cluster_name_on_cloud: str,
-    # TODO: make ports optional and allow cleaning up only specified ports.
-    ports: List[str],
-    provider_config: Optional[Dict[str, Any]] = None,
+        provider_name: str,
+        cluster_name_on_cloud: str,
+        # TODO: make ports optional and allow cleaning up only specified ports.
+        ports: List[str],
+        provider_config: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Delete any opened ports."""
     raise NotImplementedError
@@ -143,11 +146,11 @@ def cleanup_ports(
 
 @_route_to_cloud_impl
 def query_ports(
-    provider_name: str,
-    cluster_name_on_cloud: str,
-    ports: List[str],
-    head_ip: Optional[str] = None,
-    provider_config: Optional[Dict[str, Any]] = None,
+        provider_name: str,
+        cluster_name_on_cloud: str,
+        ports: List[str],
+        head_ip: Optional[str] = None,
+        provider_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, List[common.Endpoint]]:
     """Query details about ports on a cluster.
 
@@ -184,9 +187,9 @@ def get_cluster_info(
 
 @_route_to_cloud_impl
 def get_command_runners(
-    provider_name: str,
-    cluster_info: common.ClusterInfo,
-    **crednetials: Dict[str, Any],
+        provider_name: str,
+        cluster_info: common.ClusterInfo,
+        **crednetials: Dict[str, Any],
 ) -> List[command_runner.CommandRunner]:
     """Get a command runner for the given cluster."""
     ip_list = cluster_info.get_feasible_ips()

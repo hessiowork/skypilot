@@ -1152,7 +1152,6 @@ class RetryingVmProvisioner(object):
                      resources_lib.Resources]] = None):
         self._blocked_resources: Set[resources_lib.Resources] = set()
         if blocked_resources:
-            # blocked_resources is not None and not empty.
             self._blocked_resources.update(blocked_resources)
 
         self.log_dir = os.path.expanduser(log_dir)
@@ -1191,24 +1190,16 @@ class RetryingVmProvisioner(object):
         zones = None
 
         def _get_previously_launched_zones() -> Optional[List[clouds.Zone]]:
-            # When the cluster exists, the to_provision should have been set
-            # to the previous cluster's resources.
             zones = [
                 clouds.Zone(name=to_provision.zone),
             ] if to_provision.zone is not None else None
             if zones is None:
-                # Reuse the zone field in the ray yaml as the
-                # prev_resources.zone field may not be set before the previous
-                # cluster is launched.
                 handle = global_user_state.get_handle_from_cluster_name(
                     cluster_name)
                 assert isinstance(handle, CloudVmRayResourceHandle), (
                     'handle should be CloudVmRayResourceHandle (found: '
                     f'{type(handle)}) {cluster_name!r}')
                 config = common_utils.read_yaml(handle.cluster_yaml)
-                # This is for the case when the zone field is not set in the
-                # launched resources in a previous launch (e.g., ctrl-c during
-                # launch and multi-node cluster before PR #1700).
                 zones_str = config.get('provider', {}).get('availability_zone')
                 if zones_str is not None:
                     zones = [
@@ -1217,22 +1208,13 @@ class RetryingVmProvisioner(object):
             return zones
 
         if prev_cluster_status is not None:
-            # If the cluster is previously launched, we should relaunch in the
-            # same region and zone.
             zones = _get_previously_launched_zones()
-
             if prev_cluster_status != status_lib.ClusterStatus.UP:
                 logger.info(
                     f'Cluster {cluster_name!r} (status: '
                     f'{prev_cluster_status.value}) was previously launched '
                     f'in {cloud} {region.name}. Relaunching in that region.')
             yield zones
-
-            # If it reaches here: the cluster status in the database gets
-            # set to either STOPPED or None, since a launch request was issued
-            # but failed, and the provisioning loop (_retry_zones()) stopped the
-            # cluster if `cluster_ever_up` is True; or terminated the cluster
-            # otherwise.
             if prev_cluster_ever_up:
                 message = (f'Failed to launch cluster {cluster_name!r} '
                            f'(previous status: {prev_cluster_status.value}). '
@@ -1247,25 +1229,9 @@ class RetryingVmProvisioner(object):
             message = (f'Failed to launch cluster {cluster_name!r} '
                        f'(previous status: {prev_cluster_status.value}) '
                        f'with the original resources: {to_provision}.')
-            # We attempted re-launching a previously INIT cluster with the
-            # same cloud/region/resources, but failed. Here no_failover=False,
-            # so we will retry provisioning it with the current requested
-            # resources in the outer loop.
-            #
-            # This condition can be triggered for previously INIT cluster by
-            # (1) launch, after answering prompt immediately ctrl-c;
-            # (2) launch again.
-            # After (1), the cluster exists with INIT, and may or may not be
-            # live.  And if it hits here, it's definitely not alive (because
-            # step (2) failed).  Hence it's ok to retry with different
-            # cloud/region and with current resources.
             with ux_utils.print_exception_no_traceback():
                 raise exceptions.ResourcesUnavailableError(message)
 
-        # If it reaches here, it means the cluster did not exist, as all the
-        # cases when the cluster exists have been handled above (either the
-        # provision succeeded in the caller and no need to retry, or this
-        # function raised an ResourcesUnavailableError).
         for zones in cloud.zones_provision_loop(
                 region=to_provision.region,
                 num_nodes=num_nodes,
@@ -1279,7 +1245,6 @@ class RetryingVmProvisioner(object):
                 assert zones, (
                     'Either None or a non-empty list of zones should '
                     'be yielded')
-                # Only retry requested region/zones or all if not specified.
                 zone_names = [zone.name for zone in zones]
                 if not to_provision.valid_on_region_zones(
                         region.name, zone_names):
@@ -1300,11 +1265,11 @@ class RetryingVmProvisioner(object):
         prev_cluster_status: Optional[status_lib.ClusterStatus],
         prev_handle: Optional['CloudVmRayResourceHandle'],
         prev_cluster_ever_up: bool,
+        image_name: str = None,
     ) -> Dict[str, Any]:
         """The provision retry loop."""
         style = colorama.Style
         fore = colorama.Fore
-        # Get log_path name
         log_path = os.path.join(self.log_dir, 'provision.log')
         log_abs_path = os.path.abspath(log_path)
         if not dryrun:
@@ -1314,16 +1279,11 @@ class RetryingVmProvisioner(object):
         logger.info('To view detailed progress: '
                     f'{style.BRIGHT}{tail_cmd}{style.RESET_ALL}')
 
-        # Get previous cluster status
         cluster_exists = prev_cluster_status is not None
-
         assert to_provision.region is not None, (
             to_provision, 'region should have been set by the optimizer.')
         region = clouds.Region(to_provision.region)
 
-        # Optimization - check if user has non-zero quota for
-        # the instance type in the target region. If not, fail early
-        # instead of trying to provision and failing later.
         try:
             need_provision = to_provision.cloud.check_quota_available(
                 to_provision)
@@ -1335,12 +1295,7 @@ class RetryingVmProvisioner(object):
                         f'{common_utils.format_exception(e, use_bracket=True)}')
 
         if not need_provision:
-            # if quota is found to be zero, raise exception and skip to
-            # the next region
-            if to_provision.use_spot:
-                instance_descriptor = 'spot'
-            else:
-                instance_descriptor = 'on-demand'
+            instance_descriptor = 'spot' if to_provision.use_spot else 'on-demand'
             raise exceptions.ResourcesUnavailableError(
                 f'{colorama.Fore.YELLOW}Found no quota for '
                 f'{to_provision.instance_type} {instance_descriptor} '
@@ -1351,16 +1306,14 @@ class RetryingVmProvisioner(object):
                 f'https://skypilot.readthedocs.io/en/latest/cloud-setup/quota.html.'  # pylint: disable=line-too-long
             )
 
+        logger.info(f'Yield zonessss::: {self._yield_zones(to_provision, num_nodes, cluster_name,prev_cluster_status,prev_cluster_ever_up)} nodes in {to_provision.cloud} ')
+        for zones in self._yield_zones(to_provision, num_nodes, cluster_name,prev_cluster_status,prev_cluster_ever_up):
+            if zones is None:
+                logger.warning('No zones yielded, skipping iteration')
+                continue
         for zones in self._yield_zones(to_provision, num_nodes, cluster_name,
                                        prev_cluster_status,
                                        prev_cluster_ever_up):
-            # Filter out zones that are blocked, if any.
-            # This optimize the provision loop by skipping zones that are
-            # indicated to be unavailable from previous provision attempts.
-            # It can happen for the provisioning on GCP, as the
-            # yield_region_zones will return zones from a region one by one,
-            # but the optimizer that does the filtering will not be involved
-            # until the next region.
             if zones is not None:
                 remaining_unblocked_zones = copy.deepcopy(zones)
                 for zone in zones:
@@ -1372,14 +1325,10 @@ class RetryingVmProvisioner(object):
                             remaining_unblocked_zones.remove(zone)
                             break
                 if not remaining_unblocked_zones:
-                    # Skip the region if all zones are blocked.
                     continue
                 zones = remaining_unblocked_zones
 
             if zones is None:
-                # For clouds that don't have a zone concept or cloud
-                # provisioners that do not support zone-based provisioning
-                # (e.g., Azure, Lambda).
                 zone_str = ''
             else:
                 zone_str = ','.join(z.name for z in zones)
@@ -1397,16 +1346,10 @@ class RetryingVmProvisioner(object):
                     dryrun=dryrun,
                     keep_launch_fields_in_existing_config=cluster_exists)
             except exceptions.ResourcesUnavailableError as e:
-                # Failed due to catalog issue, e.g. image not found, or
-                # GPUs are requested in a Kubernetes cluster but the cluster
-                # does not have nodes labeled with GPU types.
                 logger.info(f'{e}')
                 continue
             except exceptions.InvalidCloudConfigs as e:
-                # Failed due to invalid user configs in ~/.sky/config.yaml.
                 logger.warning(f'{common_utils.format_exception(e)}')
-                # We should block the entire cloud if the user config is
-                # invalid.
                 _add_to_blocked_resources(
                     self._blocked_resources,
                     to_provision.copy(region=None, zone=None))
@@ -1427,23 +1370,12 @@ class RetryingVmProvisioner(object):
                 prev_cluster_ips = prev_handle.stable_internal_external_ips
                 prev_ssh_ports = prev_handle.stable_ssh_ports
                 prev_cluster_info = prev_handle.cached_cluster_info
-            # Record early, so if anything goes wrong, 'sky status' will show
-            # the cluster name and users can appropriately 'sky down'.  It also
-            # means a second 'sky launch -c <name>' will attempt to reuse.
             handle = CloudVmRayResourceHandle(
                 cluster_name=cluster_name,
-                # Backward compatibility will be guaranteed by the underlying
-                # backend_utils.write_cluster_config, which gets the cluster
-                # name on cloud from the ray yaml file, if the previous cluster
-                # exists.
                 cluster_name_on_cloud=config_dict['cluster_name_on_cloud'],
                 cluster_yaml=cluster_config_file,
                 launched_nodes=num_nodes,
-                # OK for this to be shown in CLI as status == INIT.
                 launched_resources=launched_resources,
-                # Use the previous cluster's IPs and ports if available to
-                # optimize the case where the cluster is restarted, i.e., no
-                # need to query IPs and ports from the cloud provider.
                 stable_internal_external_ips=prev_cluster_ips,
                 stable_ssh_ports=prev_ssh_ports,
                 cluster_info=prev_cluster_info,
@@ -1451,7 +1383,6 @@ class RetryingVmProvisioner(object):
             usage_lib.messages.usage.update_final_cluster_status(
                 status_lib.ClusterStatus.INIT)
 
-            # This sets the status to INIT (even for a normal, UP cluster).
             global_user_state.add_or_update_cluster(
                 cluster_name,
                 cluster_handle=handle,
@@ -1464,8 +1395,6 @@ class RetryingVmProvisioner(object):
 
             if (to_provision.cloud.PROVISIONER_VERSION ==
                     clouds.ProvisionerVersion.SKYPILOT):
-                # TODO (suquark): Gradually move the other clouds to
-                #  the new provisioner once they are ready.
                 assert to_provision.region == region.name, (to_provision,
                                                             region)
                 num_nodes = handle.launched_nodes
@@ -1479,7 +1408,9 @@ class RetryingVmProvisioner(object):
                         num_nodes=num_nodes,
                         cluster_yaml=handle.cluster_yaml,
                         prev_cluster_ever_up=prev_cluster_ever_up,
-                        log_dir=self.log_dir)
+                        log_dir=self.log_dir,
+                        image_name=image_name,
+                    )
                     # NOTE: We will handle the logic of '_ensure_cluster_ray_started' #pylint: disable=line-too-long
                     # in 'provision_utils.post_provision_runtime_setup()' in the
                     # caller.
@@ -1497,19 +1428,11 @@ class RetryingVmProvisioner(object):
                     with ux_utils.print_exception_no_traceback():
                         raise
                 except Exception as e:  # pylint: disable=broad-except
-                    # NOTE: We try to cleanup the cluster even if the previous
-                    # cluster does not exist. Also we are fast at
-                    # cleaning up clusters now if there is no existing node..
                     CloudVmRayBackend().post_teardown_cleanup(
                         handle, terminate=not prev_cluster_ever_up)
-                    # TODO(suquark): other clouds may have different zone
-                    #  blocking strategy. See '_update_blocklist_on_error'
-                    #  for details.
                     FailoverCloudErrorHandlerV2.update_blocklist_on_error(
                         self._blocked_resources, to_provision, region, zones, e)
                     continue
-                # NOTE: The code below in the loop should not be reachable
-                # with the new provisioner.
 
             logging_info = {
                 'cluster_name': cluster_name,
@@ -1523,13 +1446,6 @@ class RetryingVmProvisioner(object):
                                            logging_info, to_provision.use_spot))
 
             if status == GangSchedulingStatus.CLUSTER_READY:
-                # We must query the IPs from the cloud provider, when the
-                # provisioning is done, to make sure the cluster IPs are
-                # up-to-date.
-                # The staled IPs may be caused by the node being restarted
-                # manually or by the cloud provider.
-                # Optimize the case where the cluster's head IPs can be parsed
-                # from the output of 'ray up'.
                 if handle.launched_nodes == 1:
                     handle.update_cluster_ips(
                         max_attempts=_FETCH_IP_MAX_ATTEMPTS,
@@ -1540,17 +1456,6 @@ class RetryingVmProvisioner(object):
                         max_attempts=_FETCH_IP_MAX_ATTEMPTS)
                 handle.update_ssh_ports(max_attempts=_FETCH_IP_MAX_ATTEMPTS)
                 if cluster_exists:
-                    # Guard against the case where there's an existing cluster
-                    # with ray runtime messed up (e.g., manually killed) by (1)
-                    # querying ray status (2) restarting ray if needed.
-                    #
-                    # The above 'ray up' will not restart it automatically due
-                    # to 'ray up # --no-restart' flag.
-                    #
-                    # NOTE: this is performance sensitive and has been observed
-                    # to take 9s. Only do this for existing clusters, not
-                    # freshly launched ones (which should have ray runtime
-                    # started).
                     self._ensure_cluster_ray_started(handle, log_abs_path)
 
                 config_dict['handle'] = handle
@@ -1559,23 +1464,15 @@ class RetryingVmProvisioner(object):
                             f' existing VM{plural}.{style.RESET_ALL}')
                 return config_dict
 
-            # The cluster is not ready. We must perform error recording and/or
-            # cleanup.
-
-            # If cluster was ever up, stop it; otherwise terminate.
             terminate_or_stop = not prev_cluster_ever_up
             definitely_no_nodes_launched = False
             if status == GangSchedulingStatus.HEAD_FAILED:
-                # ray up failed for the head node.
                 definitely_no_nodes_launched = (
                     FailoverCloudErrorHandlerV1.update_blocklist_on_error(
                         self._blocked_resources, to_provision, region, zones,
                         stdout, stderr))
             else:
-                # gang scheduling failed.
                 assert status == GangSchedulingStatus.GANG_FAILED, status
-                # The stdout/stderr of ray up is not useful here, since
-                # head node is successfully provisioned.
                 definitely_no_nodes_launched = (
                     FailoverCloudErrorHandlerV1.update_blocklist_on_error(
                         self._blocked_resources,
@@ -1584,47 +1481,27 @@ class RetryingVmProvisioner(object):
                         zones=zones,
                         stdout=None,
                         stderr=None))
-                # GANG_FAILED means head is up, workers failed.
                 assert definitely_no_nodes_launched is False, (
                     definitely_no_nodes_launched)
 
-                # Only log the errors for GANG_FAILED, since HEAD_FAILED may
-                # not have created any resources (it can happen however) and
-                # HEAD_FAILED can happen in "normal" failover cases.
                 logger.error('*** Failed provisioning the cluster. ***')
                 terminate_str = ('Terminating'
                                  if terminate_or_stop else 'Stopping')
                 logger.error(f'*** {terminate_str} the failed cluster. ***')
 
-            # If these conditions hold, it *should* be safe to skip the cleanup
-            # action. This is a UX optimization.
-            #
-            # We want to skip mainly for VPC/subnets errors thrown during node
-            # provider bootstrapping: if users encountered "No VPC with name
-            # 'xxx' is found in <region>.", then going ahead to down the
-            # non-existent cluster will itself print out a (caught, harmless)
-            # error with the same message.  This was found to be
-            # confusing. Thus we skip termination.
             skip_cleanup = not cluster_exists and definitely_no_nodes_launched
             if skip_cleanup:
                 continue
 
-            # There may exist partial nodes (e.g., head node) so we must
-            # terminate or stop before moving on to other regions.
-            #
-            # NOTE: even HEAD_FAILED could've left a live head node there,
-            # so we must terminate/stop here too. E.g., node is up, and ray
-            # autoscaler proceeds to setup commands, which may fail:
-            #   ERR updater.py:138 -- New status: update-failed
             CloudVmRayBackend().teardown_no_lock(handle,
                                                  terminate=terminate_or_stop)
 
+        logger.info(f'Here is where I think this error is: {to_provision.cloud}')
         if to_provision.zone is not None:
             message = (
                 f'Failed to acquire resources in {to_provision.zone}. '
                 'Try changing resource requirements or use another zone.')
         elif to_provision.region is not None:
-            # For public clouds, provision.region is always set.
             message = ('Failed to acquire resources in all zones in '
                        f'{to_provision.region}. Try changing resource '
                        'requirements or use another region.')
@@ -1632,100 +1509,45 @@ class RetryingVmProvisioner(object):
             message = (f'Failed to acquire resources in {to_provision.cloud}. '
                        'Try changing resource requirements or use another '
                        'cloud provider.')
-        # Do not failover to other locations if the cluster was ever up, since
-        # the user can have some data on the cluster.
         raise exceptions.ResourcesUnavailableError(
             message, no_failover=prev_cluster_ever_up)
 
-    # TODO(suquark): Deprecate this method
-    # once the `provision_utils` is adopted for all the clouds.
-    @timeline.event
     def _gang_schedule_ray_up(
         self, to_provision_cloud: clouds.Cloud, cluster_config_file: str,
         cluster_handle: 'backends.CloudVmRayResourceHandle', log_abs_path: str,
         stream_logs: bool, logging_info: dict, use_spot: bool
     ) -> Tuple[GangSchedulingStatus, str, str, Optional[str], Optional[str]]:
-        """Provisions a cluster via 'ray up' and wait until fully provisioned.
-
-        Returns:
-            (GangSchedulingStatus; stdout; stderr;
-                optional head_internal_ip; optional head_external_ip).
-        """
-        # FIXME(zhwu,zongheng): ray up on multiple nodes ups the head node then
-        # waits for all workers; turn it into real gang scheduling.
-        # FIXME: refactor code path to remove use of stream_logs
-        del stream_logs
-
+        """Provisions a cluster via 'ray up' and wait until fully provisioned."""
         def ray_up():
-            # Runs `ray up <kwargs>` with our monkey-patched launch hash
-            # calculation. See the monkey patch file for why.
-            #
-            # NOTE: --no-restart solves the following bug.  Without it, if 'ray
-            # up' (sky launch) twice on a cluster with >1 node, the worker node
-            # gets disconnected/killed by ray autoscaler; the whole task will
-            # just freeze.  (Doesn't affect 1-node clusters.)  With this flag,
-            # ray processes no longer restart and this bug doesn't show.
-            # Downside is existing tasks on the cluster will keep running
-            # (which may be ok with the semantics of 'sky launch' twice).
-            # Tracked in https://github.com/ray-project/ray/issues/20402.
-            # Ref: https://github.com/ray-project/ray/blob/releases/2.4.0/python/ray/autoscaler/sdk/sdk.py#L16-L49  # pylint: disable=line-too-long
             script_path = write_ray_up_script_with_patched_launch_hash_fn(
                 cluster_config_file, ray_up_kwargs={'no_restart': True})
 
-            # Redirect stdout/err to the file and streaming (if stream_logs).
-            # With stdout/err redirected, 'ray up' will have no color and
-            # different order from directly running in the console. The
-            # `--log-style` and `--log-color` flags do not work. To reproduce,
-            # `ray up --log-style pretty --log-color true | tee tmp.out`.
             returncode, stdout, stderr = log_lib.run_with_log(
                 [sys.executable, script_path],
                 log_abs_path,
                 stream_logs=False,
                 start_streaming_at='Shared connection to',
                 line_processor=log_utils.RayUpLineProcessor(),
-                # Reduce BOTO_MAX_RETRIES from 12 to 5 to avoid long hanging
-                # time during 'ray up' if insufficient capacity occurs.
                 env=dict(
                     os.environ,
                     BOTO_MAX_RETRIES='5',
-                    # Use environment variables to disable the ray usage collection
-                    # (to avoid overheads and potential issues with the usage)
-                    # as sdk does not take the argument for disabling the usage
-                    # collection.
                     RAY_USAGE_STATS_ENABLED='0'),
                 require_outputs=True,
-                # Disable stdin to avoid ray outputs mess up the terminal with
-                # misaligned output when multithreading/multiprocessing are used
-                # Refer to: https://github.com/ray-project/ray/blob/d462172be7c5779abf37609aed08af112a533e1e/python/ray/autoscaler/_private/subprocess_output_util.py#L264  # pylint: disable=line-too-long
                 stdin=subprocess.DEVNULL)
             return returncode, stdout, stderr
 
         region_name = logging_info['region_name']
         zone_str = logging_info['zone_str']
         style = colorama.Style
-        if isinstance(to_provision_cloud, clouds.Kubernetes):
-            logger.info(f'{style.BRIGHT}Launching on {to_provision_cloud} '
-                        f'{style.RESET_ALL}')
-        else:
-            logger.info(f'{style.BRIGHT}Launching on {to_provision_cloud} '
-                        f'{region_name}{style.RESET_ALL}{zone_str}')
-        start = time.time()
 
-        # Edge case: /tmp/ray does not exist, so autoscaler can't create/store
-        # cluster lock and cluster state.
+        logger.info(f'{style.BRIGHT}Launching on {to_provision_cloud} '
+                    f'{region_name}{style.RESET_ALL}{zone_str}')
+        start = time.time()
         os.makedirs('/tmp/ray', exist_ok=True)
 
-        # Launch the cluster with ray up
-
-        # Retry if the any of the following happens:
-        # 1. Failed due to timeout when fetching head node for Azure.
-        # 2. Failed due to file mounts, because it is probably has too
-        # many ssh connections and can be fixed by retrying.
-        # This is required when using custom image for GCP.
         def need_ray_up(
                 ray_up_return_value: Optional[Tuple[int, str, str]]) -> bool:
 
-            # Indicates the first ray up.
             if ray_up_return_value is None:
                 return True
 
@@ -1759,8 +1581,6 @@ class RetryingVmProvisioner(object):
 
         retry_cnt = 0
         ray_up_return_value = None
-        # 5 seconds to 180 seconds. We need backoff for e.g., rate limit per
-        # minute errors.
         backoff = common_utils.Backoff(initial_backoff=5,
                                        max_backoff_factor=180 // 5)
         while (retry_cnt < _MAX_RAY_UP_RETRY and
@@ -1771,8 +1591,6 @@ class RetryingVmProvisioner(object):
                 logger.info(
                     'Retrying launching in {:.1f} seconds.'.format(sleep))
                 time.sleep(sleep)
-            # TODO(zhwu): when we retry ray up, it is possible that the ray
-            # cluster fail to start because --no-restart flag is used.
             ray_up_return_value = ray_up()
 
         assert ray_up_return_value is not None
@@ -1783,20 +1601,14 @@ class RetryingVmProvisioner(object):
         if returncode != 0:
             return GangSchedulingStatus.HEAD_FAILED, stdout, stderr, None, None
 
-        # Only 1 node or head node provisioning failure.
         if cluster_handle.launched_nodes == 1 and returncode == 0:
-            # Optimization: Try parse head ip from 'ray up' stdout.
-            # Last line looks like: 'ssh ... <user>@<public head_ip>\n'
             position = stdout.rfind('@')
-            # Use a regex to extract the IP address.
             external_ip_list = re.findall(backend_utils.IP_ADDR_REGEX,
                                           stdout[position + 1:])
             head_internal_ip, head_external_ip = None, None
             if len(external_ip_list) == 1:
                 head_external_ip = external_ip_list[0]
 
-            # Optimization: Try parse internal head ip from 'ray start' stdout.
-            # The line looks like: 'Local node IP: <internal head_ip>\n'
             position = stdout.rfind('Local node IP')
             line = stdout[position:].partition('\n')[0]
             internal_ip_list = re.findall(backend_utils.IP_ADDR_REGEX,
@@ -1809,15 +1621,11 @@ class RetryingVmProvisioner(object):
             return (GangSchedulingStatus.CLUSTER_READY, stdout, stderr,
                     head_internal_ip, head_external_ip)
 
-        # All code below is handling num_nodes > 1.
         provision_str = ('Successfully provisioned or found existing head '
                          'instance.')
         logger.info(f'{style.BRIGHT}{provision_str} '
                     f'Waiting for workers.{style.RESET_ALL}')
 
-        # FIXME(zongheng): the below requires ray processes are up on head. To
-        # repro it failing: launch a 2-node cluster, log into head and ray
-        # stop, then launch again.
         cluster_ready = backend_utils.wait_until_ray_cluster_ready(
             cluster_config_file,
             num_nodes=cluster_handle.launched_nodes,
@@ -1826,9 +1634,6 @@ class RetryingVmProvisioner(object):
                 type(to_provision_cloud)])
         if cluster_ready:
             cluster_status = GangSchedulingStatus.CLUSTER_READY
-            # ray up --no-restart again with upscaling_speed=0 after cluster is
-            # ready to ensure cluster will not scale up after preemption (spot).
-            # Skip for non-spot as this takes extra time to provision (~1min).
             if use_spot:
                 ray_config = common_utils.read_yaml(cluster_config_file)
                 ray_config['upscaling_speed'] = 0
@@ -1843,21 +1648,12 @@ class RetryingVmProvisioner(object):
         else:
             cluster_status = GangSchedulingStatus.GANG_FAILED
 
-        # Do not need stdout/stderr if gang scheduling failed.
-        # gang_succeeded = False, if head OK, but workers failed.
         return cluster_status, '', '', None, None
 
     def _ensure_cluster_ray_started(self, handle: 'CloudVmRayResourceHandle',
                                     log_abs_path) -> None:
         """Ensures ray processes are up on a just-provisioned cluster."""
         if handle.launched_nodes > 1:
-            # FIXME(zongheng): this has NOT been tested with multinode
-            # clusters; mainly because this function will not be reached in
-            # that case.  See #140 for details.  If it were reached, the
-            # following logic might work:
-            #   - get all node ips
-            #   - for all nodes: ray stop
-            #   - ray up --restart-only
             return
         backend = CloudVmRayBackend()
 
@@ -1866,8 +1662,6 @@ class RetryingVmProvisioner(object):
             instance_setup.RAY_STATUS_WITH_SKY_RAY_PORT_COMMAND,
             require_outputs=True)
         while returncode == 0 and 'No cluster status' in output:
-            # Retry until ray status is ready. This is to avoid the case where
-            # ray cluster is just started but the ray status is not ready yet.
             logger.info('Waiting for ray cluster to be ready remotely.')
             time.sleep(1)
             returncode, output, _ = backend.run_on_head(
@@ -1878,22 +1672,13 @@ class RetryingVmProvisioner(object):
             return
         backend.run_on_head(handle, f'{constants.SKY_RAY_CMD} stop')
 
-        # Runs `ray up <kwargs>` with our monkey-patched launch hash
-        # calculation. See the monkey patch file for why.
         script_path = write_ray_up_script_with_patched_launch_hash_fn(
             handle.cluster_yaml, ray_up_kwargs={'restart_only': True})
         log_lib.run_with_log(
             [sys.executable, script_path],
             log_abs_path,
             stream_logs=False,
-            # Use environment variables to disable the ray usage collection
-            # (to avoid overheads and potential issues with the usage)
-            # as sdk does not take the argument for disabling the usage
-            # collection.
             env=dict(os.environ, RAY_USAGE_STATS_ENABLED='0'),
-            # Disable stdin to avoid ray outputs mess up the terminal with
-            # misaligned output when multithreading/multiprocessing is used.
-            # Refer to: https://github.com/ray-project/ray/blob/d462172be7c5779abf37609aed08af112a533e1e/python/ray/autoscaler/_private/subprocess_output_util.py#L264 # pylint: disable=line-too-long
             stdin=subprocess.DEVNULL)
 
     @timeline.event
@@ -1903,6 +1688,7 @@ class RetryingVmProvisioner(object):
         to_provision_config: ToProvisionConfig,
         dryrun: bool,
         stream_logs: bool,
+        image_name: str = None,
     ) -> Dict[str, Any]:
         """Provision with retries for all launchable resources."""
         cluster_name = to_provision_config.cluster_name
@@ -1918,18 +1704,8 @@ class RetryingVmProvisioner(object):
 
         style = colorama.Style
         fore = colorama.Fore
-        # Retrying launchable resources.
         while True:
-            if (isinstance(to_provision.cloud, clouds.Azure) and
-                    to_provision.accelerators is not None and
-                    'A10' in to_provision.accelerators):
-                logger.warning(f'{style.BRIGHT}{fore.YELLOW}Trying to launch '
-                               'an A10 cluster on Azure. This may take ~20 '
-                               'minutes due to driver installation.'
-                               f'{style.RESET_ALL}')
             try:
-                # Recheck cluster name as the 'except:' block below may
-                # change the cloud assignment.
                 common_utils.check_cluster_name_is_valid(cluster_name)
                 if dryrun:
                     cloud_user = None
@@ -1937,16 +1713,6 @@ class RetryingVmProvisioner(object):
                     cloud_user = to_provision.cloud.get_current_user_identity()
 
                 requested_features = self._requested_features.copy()
-                # Skip stop feature for Kubernetes controllers.
-                if (isinstance(to_provision.cloud, clouds.Kubernetes) and
-                        controller_utils.Controllers.from_name(cluster_name)
-                        is not None):
-                    assert (clouds.CloudImplementationFeatures.STOP
-                            in requested_features), requested_features
-                    requested_features.remove(
-                        clouds.CloudImplementationFeatures.STOP)
-
-                # Skip if to_provision.cloud does not support requested features
                 to_provision.cloud.check_features_are_supported(
                     to_provision, requested_features)
 
@@ -1960,17 +1726,14 @@ class RetryingVmProvisioner(object):
                     cloud_user_identity=cloud_user,
                     prev_cluster_status=prev_cluster_status,
                     prev_handle=prev_handle,
-                    prev_cluster_ever_up=prev_cluster_ever_up)
+                    prev_cluster_ever_up=prev_cluster_ever_up,
+                    image_name=image_name,
+                )
                 if dryrun:
                     return config_dict
             except (exceptions.InvalidClusterNameError,
                     exceptions.NotSupportedError,
                     exceptions.CloudUserIdentityError) as e:
-                # InvalidClusterNameError: cluster name is invalid,
-                # NotSupportedError: cloud does not support requested features,
-                # CloudUserIdentityError: cloud user identity is invalid.
-                # The exceptions above should be applicable to the whole
-                # cloud, so we do add the cloud to the blocked resources.
                 logger.warning(common_utils.format_exception(e))
                 _add_to_blocked_resources(
                     self._blocked_resources,
@@ -1990,7 +1753,6 @@ class RetryingVmProvisioner(object):
 
                 logger.warning(common_utils.format_exception(e))
             else:
-                # Provisioning succeeded.
                 break
 
             if to_provision.zone is None:
@@ -2001,33 +1763,18 @@ class RetryingVmProvisioner(object):
                            f'{to_provision} in {region_or_zone_str}. '
                            f'Trying other locations (if any).{style.RESET_ALL}')
             if prev_cluster_status is None:
-                # Add failed resources to the blocklist, only when it
-                # is in fallback mode.
                 _add_to_blocked_resources(self._blocked_resources, to_provision)
             else:
-                # If we reach here, it means that the existing cluster must have
-                # a previous status of INIT, because other statuses (UP,
-                # STOPPED) will not trigger the failover due to `no_failover`
-                # flag; see _yield_zones(). Also, the cluster should have been
-                # terminated by _retry_zones().
                 assert (prev_cluster_status == status_lib.ClusterStatus.INIT
                        ), prev_cluster_status
                 assert global_user_state.get_handle_from_cluster_name(
                     cluster_name) is None, cluster_name
                 logger.info('Retrying provisioning with requested resources '
                             f'{task.num_nodes}x {task.resources}')
-                # Retry with the current, potentially "smaller" resources:
-                # to_provision == the current new resources (e.g., V100:1),
-                # which may be "smaller" than the original (V100:8).
-                # num_nodes is not part of a Resources so must be updated
-                # separately.
                 num_nodes = task.num_nodes
                 prev_cluster_status = None
                 prev_handle = None
 
-            # Set to None so that sky.optimize() will assign a new one
-            # (otherwise will skip re-optimizing this task).
-            # TODO: set all remaining tasks' best_resources to None.
             task.best_resources = None
             try:
                 self._dag = sky.optimize(
@@ -2035,11 +1782,6 @@ class RetryingVmProvisioner(object):
                     minimize=self._optimize_target,
                     blocked_resources=self._blocked_resources)
             except exceptions.ResourcesUnavailableError as e:
-                # Optimizer failed to find a feasible resources for the task,
-                # either because the previous failovers have blocked all the
-                # possible resources or the requested resources is too
-                # restrictive. If we reach here, our failover logic finally
-                # ends here.
                 raise e.with_failover_history(failover_history)
             to_provision = task.best_resources
             assert task in self._dag.tasks, 'Internal logic error.'
@@ -2675,79 +2417,37 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
             dryrun: bool,
             stream_logs: bool,
             cluster_name: str,
-            retry_until_up: bool = False) -> Optional[CloudVmRayResourceHandle]:
-        """Provisions using 'ray up'.
+            retry_until_up: bool = False,
+            image: str = None,
+            image_name: str = None,
+    ) -> Optional[CloudVmRayResourceHandle]:
+        """Provisions using 'ray up', but without SSH, user checks, or file uploads."""
 
-        Raises:
-            exceptions.ClusterOwnerIdentityMismatchError: if the cluster
-                'cluster_name' exists and is owned by another user.
-            exceptions.InvalidClusterNameError: if the cluster name is invalid.
-            exceptions.ResourcesMismatchError: if the requested resources
-                do not match the existing cluster.
-            exceptions.ResourcesUnavailableError: if the requested resources
-                cannot be satisfied. The failover_history of the exception
-                will be set as at least 1 exception from either our pre-checks
-                (e.g., cluster name invalid) or a region/zone throwing
-                resource unavailability.
-            exceptions.CommandError: any ssh command error.
-            RuntimeErorr: raised when 'rsync' is not installed.
-            # TODO(zhwu): complete the list of exceptions.
-        """
-        # FIXME: ray up for Azure with different cluster_names will overwrite
-        # each other.
-        # When rsync is not installed in the user's machine, Ray will
-        # silently retry to up the node for _MAX_RAY_UP_RETRY number
-        # of times. This is time consuming so we fail early.
-        backend_utils.check_rsync_installed()
-        # Check if the cluster is owned by the current user. Raise
-        # exceptions.ClusterOwnerIdentityMismatchError
-        backend_utils.check_owner_identity(cluster_name)
+        # Lock the cluster to avoid race conditions
         lock_path = os.path.expanduser(
             backend_utils.CLUSTER_STATUS_LOCK_PATH.format(cluster_name))
         with timeline.FileLockEvent(lock_path):
-            # Try to launch the exiting cluster first. If no existing cluster,
-            # this function will create a to_provision_config with required
-            # resources.
+            # Check or create the provisioning config
             to_provision_config = self._check_existing_cluster(
                 task, to_provision, cluster_name, dryrun)
             assert to_provision_config.resources is not None, (
                 'to_provision should not be None', to_provision_config)
 
-            prev_cluster_status = to_provision_config.prev_cluster_status
+            # Update usage metrics
             usage_lib.messages.usage.update_cluster_resources(
                 to_provision_config.num_nodes, to_provision_config.resources)
-            usage_lib.messages.usage.update_cluster_status(prev_cluster_status)
+            usage_lib.messages.usage.update_cluster_status(to_provision_config.prev_cluster_status)
 
-            # TODO(suquark): once we have sky on PyPI, we should directly
-            # install sky from PyPI.
-            # NOTE: can take ~2s.
+            # Build SkyPilot wheel (if needed) - or skip this if unnecessary
             with timeline.Event('backend.provision.wheel_build'):
-                # TODO(suquark): once we have sky on PyPI, we should directly
-                # install sky from PyPI.
                 local_wheel_path, wheel_hash = wheel_utils.build_sky_wheel()
-                # The most frequent reason for the failure of a provision
-                # request is resource unavailability instead of rate
-                # limiting; to make users wait shorter, we do not make
-                # backoffs exponential.
-                backoff = common_utils.Backoff(
-                    initial_backoff=_RETRY_UNTIL_UP_INIT_GAP_SECONDS,
-                    max_backoff_factor=1)
-            attempt_cnt = 1
-            while True:
-                # For on-demand instances, RetryingVmProvisioner will retry
-                # within the given region first, then optionally retry on all
-                # other clouds and regions (if backend.register_info()
-                # has been called).
-                # For spot instances, each provisioning request is made for a
-                # single zone and the provisioner will retry on all other
-                # clouds, regions, and zones.
-                # See optimizer.py#_make_launchables_for_valid_region_zones()
-                # for detailed reasons.
 
-                # After this "round" of optimization across clouds, provisioning
-                # may still have not succeeded. This while loop will then kick
-                # in if retry_until_up is set, which will kick off new "rounds"
-                # of optimization infinitely.
+            # Provisioning loop with retry
+            attempt_cnt = 1
+            backoff = common_utils.Backoff(
+                initial_backoff=_RETRY_UNTIL_UP_INIT_GAP_SECONDS,
+                max_backoff_factor=1)
+            while True:
                 try:
                     retry_provisioner = RetryingVmProvisioner(
                         self.log_dir,
@@ -2758,161 +2458,28 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
                         wheel_hash,
                         blocked_resources=task.blocked_resources)
                     config_dict = retry_provisioner.provision_with_retries(
-                        task, to_provision_config, dryrun, stream_logs)
+                        task, to_provision_config, dryrun, stream_logs, image_name)
                     break
                 except exceptions.ResourcesUnavailableError as e:
-                    # Do not remove the stopped cluster from the global state
-                    # if failed to start.
-                    if e.no_failover:
-                        error_message = str(e)
-                    else:
-                        # Clean up the cluster's entry in `sky status`.
-                        global_user_state.remove_cluster(cluster_name,
-                                                         terminate=True)
-                        usage_lib.messages.usage.update_final_cluster_status(
-                            None)
-                        error_message = (
-                            'Failed to provision all possible launchable '
-                            'resources.'
-                            f' Relax the task\'s resource requirements: '
-                            f'{task.num_nodes}x {list(task.resources)[0]}')
                     if retry_until_up:
-                        logger.error(error_message)
-                        # Sleep and retry.
                         gap_seconds = backoff.current_backoff()
-                        plural = 's' if attempt_cnt > 1 else ''
                         logger.info(
                             f'{colorama.Style.BRIGHT}=== Retry until up ==='
                             f'{colorama.Style.RESET_ALL}\n'
-                            f'Retrying provisioning after {gap_seconds:.0f}s '
-                            '(backoff with random jittering). '
-                            f'Already tried {attempt_cnt} attempt{plural}.')
+                            f'Retrying provisioning after {gap_seconds:.0f}s. '
+                            f'Already tried {attempt_cnt} attempt(s).')
                         attempt_cnt += 1
                         time.sleep(gap_seconds)
                         continue
-                    error_message += (
-                        '\nTo keep retrying until the cluster is up, use the '
-                        '`--retry-until-up` flag.')
-                    with ux_utils.print_exception_no_traceback():
-                        raise exceptions.ResourcesUnavailableError(
-                            error_message,
-                            failover_history=e.failover_history) from None
+                    else:
+                        raise
+
             if dryrun:
                 record = global_user_state.get_cluster_from_name(cluster_name)
                 return record['handle'] if record is not None else None
 
-            if 'provision_record' in config_dict:
-                # New provisioner is used here.
-                handle = config_dict['handle']
-                provision_record = config_dict['provision_record']
-                resources_vars = config_dict['resources_vars']
-
-                # Setup SkyPilot runtime after the cluster is provisioned
-                # 1. Wait for SSH to be ready.
-                # 2. Mount the cloud credentials, skypilot wheel,
-                #    and other necessary files to the VM.
-                # 3. Run setup commands to install dependencies.
-                # 4. Starting ray cluster and skylet.
-                cluster_info = provisioner.post_provision_runtime_setup(
-                    repr(handle.launched_resources.cloud),
-                    resources_utils.ClusterName(handle.cluster_name,
-                                                handle.cluster_name_on_cloud),
-                    handle.cluster_yaml,
-                    provision_record=provision_record,
-                    custom_resource=resources_vars.get('custom_resources'),
-                    log_dir=self.log_dir)
-                # We use the IPs from the cluster_info to update_cluster_ips,
-                # when the provisioning is done, to make sure the cluster IPs
-                # are up-to-date.
-                # The staled IPs may be caused by the node being restarted
-                # manually or by the cloud provider.
-                # Optimize the case where the cluster's IPs can be retrieved
-                # from cluster_info.
-                handle.docker_user = cluster_info.docker_user
-                handle.update_cluster_ips(max_attempts=_FETCH_IP_MAX_ATTEMPTS,
-                                          cluster_info=cluster_info)
-                handle.update_ssh_ports(max_attempts=_FETCH_IP_MAX_ATTEMPTS)
-
-                # Update launched resources.
-                handle.launched_resources = handle.launched_resources.copy(
-                    region=provision_record.region, zone=provision_record.zone)
-
-                self._update_after_cluster_provisioned(
-                    handle, to_provision_config.prev_handle, task,
-                    prev_cluster_status, handle.external_ips(),
-                    handle.external_ssh_ports(), lock_path)
-                return handle
-
-            cluster_config_file = config_dict['ray']
+            # Return the provision handle directly
             handle = config_dict['handle']
-
-            ip_list = handle.external_ips()
-            ssh_port_list = handle.external_ssh_ports()
-            assert ip_list is not None, handle
-            assert ssh_port_list is not None, handle
-
-            config = common_utils.read_yaml(cluster_config_file)
-            if 'docker' in config:
-                handle.setup_docker_user(cluster_config_file)
-
-            # Get actual zone info and save it into handle.
-            # NOTE: querying zones is expensive, observed 1node GCP >=4s.
-            zone = handle.launched_resources.zone
-            if zone is None:
-                get_zone_cmd = (
-                    handle.launched_resources.cloud.get_zone_shell_cmd())
-                # zone is None for Azure
-                if get_zone_cmd is not None:
-                    runners = handle.get_command_runners()
-
-                    def _get_zone(runner):
-                        retry_count = 0
-                        backoff = common_utils.Backoff(initial_backoff=1,
-                                                       max_backoff_factor=3)
-                        while True:
-                            returncode, stdout, stderr = runner.run(
-                                get_zone_cmd,
-                                require_outputs=True,
-                                stream_logs=False)
-                            if returncode == 0:
-                                break
-                            retry_count += 1
-                            if retry_count <= _MAX_GET_ZONE_RETRY:
-                                time.sleep(backoff.current_backoff())
-                                continue
-                        subprocess_utils.handle_returncode(
-                            returncode,
-                            get_zone_cmd,
-                            f'Failed to get zone for {cluster_name!r}',
-                            stderr=stderr,
-                            stream_logs=stream_logs)
-                        return stdout.strip()
-
-                    zones = subprocess_utils.run_in_parallel(_get_zone, runners)
-                    if len(set(zones)) == 1:
-                        # zone will be checked during Resources cls
-                        # initialization.
-                        handle.launched_resources = (
-                            handle.launched_resources.copy(zone=zones[0]))
-                    # If the number of zones > 1, nodes in the cluster are
-                    # launched in different zones (legacy clusters before
-                    # #1700), leave the zone field of handle.launched_resources
-                    # to None.
-
-            # For backward compatibility and robustness of skylet, it is checked
-            # and restarted if necessary.
-            logger.debug('Checking if skylet is running on the head node.')
-            with rich_utils.safe_status(
-                    '[bold cyan]Preparing SkyPilot runtime'):
-                # We need to source bashrc for skylet to make sure the autostop
-                # event can access the path to the cloud CLIs.
-                self.run_on_head(handle,
-                                 instance_setup.MAYBE_SKYLET_RESTART_CMD,
-                                 source_bashrc=True)
-
-            self._update_after_cluster_provisioned(
-                handle, to_provision_config.prev_handle, task,
-                prev_cluster_status, ip_list, ssh_port_list, lock_path)
             return handle
 
     def _open_ports(self, handle: CloudVmRayResourceHandle) -> None:
@@ -3340,6 +2907,7 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
         task: task_lib.Task,
         detach_run: bool,
         dryrun: bool = False,
+        image_name: str = None,
     ) -> Optional[int]:
         """Executes the task on the cluster.
 

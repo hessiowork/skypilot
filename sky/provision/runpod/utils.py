@@ -67,6 +67,8 @@ def retry(func):
 def list_instances() -> Dict[str, Dict[str, Any]]:
     """Lists instances associated with API key."""
     instances = runpod.runpod.get_pods()
+    logger.info(f'\n\n\nThis is the runpods instances!!.\n\n\n')
+    logger.info(f'\n\n\nThese are the runpods {instances}!!.\n\n\n')
 
     instance_dict: Dict[str, Dict[str, Any]] = {}
     for instance in instances:
@@ -88,7 +90,7 @@ def list_instances() -> Dict[str, Dict[str, Any]]:
     return instance_dict
 
 
-def launch(name: str, instance_type: str, region: str, disk_size: int) -> str:
+def launch(name: str, instance_type: str, region: str, disk_size: int, image_name: str) -> str:
     """Launches an instance with the given parameters.
 
     Converts the instance_type to the RunPod GPU name, finds the specs for the
@@ -100,9 +102,13 @@ def launch(name: str, instance_type: str, region: str, disk_size: int) -> str:
 
     gpu_specs = runpod.runpod.get_gpu(gpu_type)
 
+    logger.info(f'Launching RunPod instance with the following parameters: ')
+    logger.info(f'\n\n\nLet"s see if the image name is correct or not::::  {image_name}\n\n\n')
+
     new_instance = runpod.runpod.create_pod(
         name=name,
-        image_name='runpod/base:0.0.2',
+        template_id="s48ql3938g",
+        image_name="tromerocentral/dev:printhf",
         gpu_type_id=gpu_type,
         cloud_type=cloud_type,
         container_disk_in_gb=disk_size,
@@ -115,6 +121,7 @@ def launch(name: str, instance_type: str, region: str, disk_size: int) -> str:
                f'{constants.SKY_REMOTE_RAY_PORT}/http'),
         support_public_ip=True,
     )
+    logger.info(f'Launched runpod instance {new_instance["id"]}.')
 
     return new_instance['id']
 

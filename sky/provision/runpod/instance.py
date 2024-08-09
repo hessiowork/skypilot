@@ -41,11 +41,14 @@ def _get_head_instance_id(instances: Dict[str, Any]) -> Optional[str]:
     return head_instance_id
 
 
-def run_instances(region: str, cluster_name_on_cloud: str,
+def run_instances(region: str, cluster_name_on_cloud: str, image_name: str,
                   config: common.ProvisionConfig) -> common.ProvisionRecord:
     """Runs instances for the given cluster."""
+    logger.info(f'What is going on???? run_instances')
 
     pending_status = ['CREATED', 'RESTARTING']
+    logger.info(f'Launching instances for {cluster_name_on_cloud}, {pending_status}.')
+    logger.info(f'This is where runpods is called.')
 
     while True:
         instances = _filter_instances(cluster_name_on_cloud, pending_status)
@@ -79,11 +82,14 @@ def run_instances(region: str, cluster_name_on_cloud: str,
     for _ in range(to_start_count):
         node_type = 'head' if head_instance_id is None else 'worker'
         try:
+            logger.info(f'\n\n\nThis is where we make the API call to runpods.\n\n\n')
             instance_id = utils.launch(
                 name=f'{cluster_name_on_cloud}-{node_type}',
                 instance_type=config.node_config['InstanceType'],
                 region=region,
-                disk_size=config.node_config['DiskSize'])
+                disk_size=config.node_config['DiskSize'],
+                image_name=image_name,
+            )
         except Exception as e:  # pylint: disable=broad-except
             logger.warning(f'run_instances error: {e}')
             raise
@@ -96,6 +102,7 @@ def run_instances(region: str, cluster_name_on_cloud: str,
     while True:
         instances = _filter_instances(cluster_name_on_cloud, ['RUNNING'])
         ready_instance_cnt = 0
+        logger.info(f'\nInstances: {instances}\n')
         for instance_id, instance in instances.items():
             if instance.get('ssh_port') is not None:
                 ready_instance_cnt += 1

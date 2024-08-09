@@ -1,0 +1,13 @@
+Metadata-Version: 2.1
+Name: pycomposefile
+Version: 0.0.31
+Summary: Structured deserialization of Docker Compose files.
+Home-page: https://github.com/smurawski/pycomposefile
+Author: Steven Murawski
+Author-email: steven.murawski@microsoft.com
+License: MIT
+Requires-Python: >=3.6
+Description-Content-Type: text/markdown
+Requires-Dist: pyyaml
+
+# Pycomposefile
