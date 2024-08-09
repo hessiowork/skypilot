@@ -108,6 +108,7 @@ def _execute(
     idle_minutes_to_autostop: Optional[int] = None,
     no_setup: bool = False,
     clone_disk_from: Optional[str] = None,
+    image_name: str = None,
     # Internal only:
     # pylint: disable=invalid-name
     _is_launched_by_jobs_controller: bool = False,
@@ -226,10 +227,6 @@ def _execute(
                 f'Backend {backend.NAME} does not support autostop, please try'
                 f' {backends.CloudVmRayBackend.NAME}')
 
-    if Stage.CLONE_DISK in stages:
-        task = _maybe_clone_disk_from_cluster(clone_disk_from, cluster_name,
-                                              task)
-
     if not cluster_exists:
         # If spot is launched on serve or jobs controller, we don't need to
         # print out the hint.
@@ -263,10 +260,6 @@ def _execute(
                           optimize_target=optimize_target,
                           requested_features=requested_features)
 
-    if task.storage_mounts is not None:
-        # Optimizer should eventually choose where to store bucket
-        task.sync_storage_mounts()
-
     try:
         if Stage.PROVISION in stages:
             if handle is None:
@@ -275,7 +268,8 @@ def _execute(
                                            dryrun=dryrun,
                                            stream_logs=stream_logs,
                                            cluster_name=cluster_name,
-                                           retry_until_up=retry_until_up)
+                                           retry_until_up=retry_until_up,
+                                           image_name=image_name)
 
         if handle is None:
             assert dryrun, ('If not dryrun, handle must be set or '
@@ -283,26 +277,8 @@ def _execute(
             logger.info('Dryrun finished.')
             return None, None
 
-        if Stage.SYNC_WORKDIR in stages and not dryrun:
-            if task.workdir is not None:
-                backend.sync_workdir(handle, task.workdir)
-
-        if Stage.SYNC_FILE_MOUNTS in stages and not dryrun:
-            backend.sync_file_mounts(handle, task.file_mounts,
-                                     task.storage_mounts)
-
         if no_setup:
             logger.info('Setup commands skipped.')
-        elif Stage.SETUP in stages and not dryrun:
-            backend.setup(handle, task, detach_setup=detach_setup)
-
-        if Stage.PRE_EXEC in stages and not dryrun:
-            if idle_minutes_to_autostop is not None:
-                assert isinstance(backend, backends.CloudVmRayBackend)
-                assert isinstance(handle, backends.CloudVmRayResourceHandle)
-                backend.set_autostop(handle,
-                                     idle_minutes_to_autostop,
-                                     down=down)
 
         if Stage.EXEC in stages:
             try:
@@ -310,7 +286,8 @@ def _execute(
                 job_id = backend.execute(handle,
                                          task,
                                          detach_run,
-                                         dryrun=dryrun)
+                                         dryrun=dryrun,
+                                         image_name=image_name)
             finally:
                 # Enables post_execute() to be run after KeyboardInterrupt.
                 backend.post_execute(handle, down)
@@ -358,6 +335,7 @@ def launch(
     detach_run: bool = False,
     no_setup: bool = False,
     clone_disk_from: Optional[str] = None,
+    image_name: str = None,
     # Internal only:
     # pylint: disable=invalid-name
     _is_launched_by_jobs_controller: bool = False,
@@ -470,6 +448,7 @@ def launch(
         idle_minutes_to_autostop=idle_minutes_to_autostop,
         no_setup=no_setup,
         clone_disk_from=clone_disk_from,
+        image_name=image_name,
         _is_launched_by_jobs_controller=_is_launched_by_jobs_controller,
         _is_launched_by_sky_serve_controller=
         _is_launched_by_sky_serve_controller,

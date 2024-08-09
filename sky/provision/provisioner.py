@@ -40,12 +40,15 @@ _TITLE = '\n\n' + '=' * 20 + ' {} ' + '=' * 20 + '\n'
 
 
 def _bulk_provision(
-    cloud: clouds.Cloud,
-    region: clouds.Region,
-    zones: Optional[List[clouds.Zone]],
-    cluster_name: resources_utils.ClusterName,
-    bootstrap_config: provision_common.ProvisionConfig,
+        cloud: clouds.Cloud,
+        region: clouds.Region,
+        zones: Optional[List[clouds.Zone]],
+        cluster_name: resources_utils.ClusterName,
+        bootstrap_config: provision_common.ProvisionConfig,
 ) -> provision_common.ProvisionRecord:
+
+    logger.info(f'What is going on???? _bulk_provision')
+    logger.info(f'cloud: {cloud}, region: {region}, zones: {zones}, cluster_name: {cluster_name}, bootstrap_config: {bootstrap_config}')
     provider_name = repr(cloud)
     region_name = region.name
 
@@ -58,64 +61,55 @@ def _bulk_provision(
         zone_str = ','.join(z.name for z in zones)
 
     if isinstance(cloud, clouds.Kubernetes):
-        # Omit the region name for Kubernetes.
-        logger.info(f'{style.BRIGHT}Launching on {cloud}{style.RESET_ALL} '
-                    f'{cluster_name!r}.')
+        logger.info(f'{style.BRIGHT}Launching on {cloud}{style.RESET_ALL} {cluster_name!r}.')
     else:
-        logger.info(f'{style.BRIGHT}Launching on {cloud} '
-                    f'{region_name}{style.RESET_ALL} ({zone_str})')
+        logger.info(f'{style.BRIGHT}Launching on {cloud} {region_name}{style.RESET_ALL} ({zone_str})')
 
     start = time.time()
     with rich_utils.safe_status('[bold cyan]Launching[/]') as status:
         try:
-            # TODO(suquark): Should we cache the bootstrapped result?
-            #  Currently it is not necessary as bootstrapping takes
-            #  only ~3s, caching it seems over-engineering and could
-            #  cause other issues like the cache is not synced
-            #  with the cloud configuration.
-            config = provision.bootstrap_instances(provider_name, region_name,
-                                                   cluster_name.name_on_cloud,
-                                                   bootstrap_config)
+            logger.info(f"Provision record: {provision_common.ProvisionRecord}")
+            logger.info(f"Provision record: {provider_name}, {region_name}, {cluster_name.name_on_cloud}, {bootstrap_config}")
+            provision_record = provision.run_instances(
+                provider_name,
+                region_name,
+                cluster_name.name_on_cloud,
+                config=bootstrap_config
+            )
         except Exception as e:
-            logger.error(f'{colorama.Fore.YELLOW}Failed to configure '
-                         f'{cluster_name!r} on {cloud} {region} ({zone_str}) '
+            logger.error(f'{colorama.Fore.YELLOW}Failed to provision {cluster_name!r} on {cloud} {region} ({zone_str}) '
                          'with the following error:'
                          f'{colorama.Style.RESET_ALL}\n'
                          f'{common_utils.format_exception(e)}')
             raise
 
-        provision_record = provision.run_instances(provider_name,
-                                                   region_name,
-                                                   cluster_name.name_on_cloud,
-                                                   config=config)
+        logger.info(f"Provision.run_instances has run:")
 
         backoff = common_utils.Backoff(initial_backoff=1, max_backoff_factor=3)
-        logger.debug(
-            f'\nWaiting for instances of {cluster_name!r} to be ready...')
+        logger.debug(f'\nWaiting for instances of {cluster_name!r} to be ready...')
         status.update('[bold cyan]Launching - Checking instance status[/]')
-        # AWS would take a very short time (<<1s) updating the state of the
-        # instance.
+
         time.sleep(1)
         for retry_cnt in range(_MAX_RETRY):
             try:
-                provision.wait_instances(provider_name,
-                                         region_name,
-                                         cluster_name.name_on_cloud,
-                                         state=status_lib.ClusterStatus.UP)
+                provision.wait_instances(
+                    provider_name,
+                    region_name,
+                    cluster_name.name_on_cloud,
+                    state=status_lib.ClusterStatus.UP
+                )
+                logger.info(f"Provision.run_instances has run:")
                 break
             except (aws.botocore_exceptions().WaiterError, RuntimeError):
                 time.sleep(backoff.current_backoff())
         else:
             raise RuntimeError(
-                f'Failed to wait for instances of {cluster_name!r} to be '
-                f'ready on the cloud provider after max retries {_MAX_RETRY}.')
-        logger.debug(
-            f'Instances of {cluster_name!r} are ready after {retry_cnt} '
-            'retries.')
+                f'Failed to wait for instances of {cluster_name!r} to be ready on the cloud provider after max retries'
+                f' {_MAX_RETRY}.')
 
-    logger.debug(
-        f'\nProvisioning {cluster_name!r} took {time.time() - start:.2f} '
-        f'seconds.')
+        logger.debug(f'Instances of {cluster_name!r} are ready after {retry_cnt} retries.')
+
+    logger.debug(f'\nProvisioning {cluster_name!r} took {time.time() - start:.2f} seconds.')
 
     return provision_record
 
@@ -129,6 +123,7 @@ def bulk_provision(
     cluster_yaml: str,
     prev_cluster_ever_up: bool,
     log_dir: str,
+    image_name: str,
 ) -> provision_common.ProvisionRecord:
     """Provisions a cluster and wait until fully provisioned.
 
@@ -162,6 +157,7 @@ def bulk_provision(
                 f'{json.dumps(dataclasses.asdict(bootstrap_config), indent=2)}')
             return _bulk_provision(cloud, region, zones, cluster_name,
                                    bootstrap_config)
+                                   # , image_name)
         except Exception:  # pylint: disable=broad-except
             zone_str = 'all zones'
             if zones:
@@ -403,20 +399,13 @@ def _post_provision_setup(
         cloud_name: str, cluster_name: resources_utils.ClusterName,
         cluster_yaml: str, provision_record: provision_common.ProvisionRecord,
         custom_resource: Optional[str]) -> provision_common.ClusterInfo:
+
     config_from_yaml = common_utils.read_yaml(cluster_yaml)
     provider_config = config_from_yaml.get('provider')
     cluster_info = provision.get_cluster_info(cloud_name,
                                               provision_record.region,
                                               cluster_name.name_on_cloud,
                                               provider_config=provider_config)
-
-    if cluster_info.num_instances > 1:
-        # Only worker nodes have logs in the per-instance log directory. Head
-        # node's log will be redirected to the main log file.
-        per_instance_log_dir = metadata_utils.get_instance_log_dir(
-            cluster_name.name_on_cloud, '*')
-        logger.debug('For per-instance logs, run: '
-                     f'tail -n 100 -f {per_instance_log_dir}/*.log')
 
     logger.debug(
         'Provision record:\n'
@@ -427,125 +416,21 @@ def _post_provision_setup(
     head_instance = cluster_info.get_head_instance()
     if head_instance is None:
         e = RuntimeError(f'Provision failed for cluster {cluster_name!r}. '
-                         'Could not find any head instance. To fix: refresh '
-                         f'status with: sky status -r; and retry provisioning.')
+                         'Could not find any head instance.')
         setattr(e, 'detailed_reason', str(cluster_info))
         raise e
 
-    # TODO(suquark): Move wheel build here in future PRs.
-    # We don't set docker_user here, as we are configuring the VM itself.
-    ssh_credentials = backend_utils.ssh_credential_from_yaml(
-        cluster_yaml, ssh_user=cluster_info.ssh_user)
+    # Skip the SSH-related steps
+    if cluster_info.num_instances > 1:
+        logger.debug('Multiple instances detected, skipping SSH setup.')
 
-    with rich_utils.safe_status(
-            '[bold cyan]Launching - Waiting for SSH access[/]') as status:
+    # Skip Docker initialization if not needed
+    docker_config = config_from_yaml.get('docker', {})
+    if docker_config:
+        logger.debug(f'Skipping Docker initialization for {cluster_name!r}.')
 
-        logger.debug(
-            f'\nWaiting for SSH to be available for {cluster_name!r} ...')
-        wait_for_ssh(cluster_info, ssh_credentials)
-        logger.debug(f'SSH Conection ready for {cluster_name!r}')
-        plural = '' if len(cluster_info.instances) == 1 else 's'
-        logger.info(f'{colorama.Fore.GREEN}Successfully provisioned '
-                    f'or found existing instance{plural}.'
-                    f'{colorama.Style.RESET_ALL}')
-
-        docker_config = config_from_yaml.get('docker', {})
-        if docker_config:
-            status.update(
-                '[bold cyan]Launching - Initializing docker container[/]')
-            docker_user = instance_setup.initialize_docker(
-                cluster_name.name_on_cloud,
-                docker_config=docker_config,
-                cluster_info=cluster_info,
-                ssh_credentials=ssh_credentials)
-            if docker_user is None:
-                raise RuntimeError(
-                    f'Failed to retrieve docker user for {cluster_name!r}. '
-                    'Please check your docker configuration.')
-
-            cluster_info.docker_user = docker_user
-            ssh_credentials['docker_user'] = docker_user
-            logger.debug(f'Docker user: {docker_user}')
-
-        # We mount the metadata with sky wheel for speedup.
-        # NOTE: currently we mount all credentials for all nodes, because
-        # (1) jobs controllers need permission to launch/down nodes of
-        #     multiple clouds
-        # (2) head instances need permission for auto stop or auto down
-        #     nodes for the current cloud
-        # (3) all instances need permission to mount storage for all clouds
-        # It is possible to have a "smaller" permission model, but we leave that
-        # for later.
-        file_mounts = config_from_yaml.get('file_mounts', {})
-
-        runtime_preparation_str = ('[bold cyan]Preparing SkyPilot '
-                                   'runtime ({step}/3 - {step_name})')
-        status.update(
-            runtime_preparation_str.format(step=1, step_name='initializing'))
-        instance_setup.internal_file_mounts(cluster_name.name_on_cloud,
-                                            file_mounts, cluster_info,
-                                            ssh_credentials)
-
-        status.update(
-            runtime_preparation_str.format(step=2, step_name='dependencies'))
-        instance_setup.setup_runtime_on_cluster(
-            cluster_name.name_on_cloud, config_from_yaml['setup_commands'],
-            cluster_info, ssh_credentials)
-
-        runners = provision.get_command_runners(cloud_name, cluster_info,
-                                                **ssh_credentials)
-        head_runner = runners[0]
-
-        status.update(
-            runtime_preparation_str.format(step=3, step_name='runtime'))
-        full_ray_setup = True
-        ray_port = constants.SKY_REMOTE_RAY_PORT
-        if not provision_record.is_instance_just_booted(
-                head_instance.instance_id):
-            # Check if head node Ray is alive
-            returncode, stdout, _ = head_runner.run(
-                instance_setup.RAY_STATUS_WITH_SKY_RAY_PORT_COMMAND,
-                stream_logs=False,
-                require_outputs=True)
-            if returncode:
-                logger.debug('Ray cluster on head is not up. Restarting...')
-            else:
-                logger.debug('Ray cluster on head is up.')
-                ray_port = common_utils.decode_payload(stdout)['ray_port']
-            full_ray_setup = bool(returncode)
-
-        if full_ray_setup:
-            logger.debug('Starting Ray on the entire cluster.')
-            instance_setup.start_ray_on_head_node(
-                cluster_name.name_on_cloud,
-                custom_resource=custom_resource,
-                cluster_info=cluster_info,
-                ssh_credentials=ssh_credentials)
-
-        # NOTE: We have to check all worker nodes to make sure they are all
-        #  healthy, otherwise we can only start Ray on newly started worker
-        #  nodes like this:
-        #
-        # worker_ips = []
-        # for inst in cluster_info.instances.values():
-        #     if provision_record.is_instance_just_booted(inst.instance_id):
-        #         worker_ips.append(inst.public_ip)
-
-        if cluster_info.num_instances > 1:
-            instance_setup.start_ray_on_worker_nodes(
-                cluster_name.name_on_cloud,
-                no_restart=not full_ray_setup,
-                custom_resource=custom_resource,
-                # Pass the ray_port to worker nodes for backward compatibility
-                # as in some existing clusters the ray_port is not dumped with
-                # instance_setup._DUMP_RAY_PORTS. We should use the ray_port
-                # from the head node for worker nodes.
-                ray_port=ray_port,
-                cluster_info=cluster_info,
-                ssh_credentials=ssh_credentials)
-
-        instance_setup.start_skylet_on_head_node(cluster_name.name_on_cloud,
-                                                 cluster_info, ssh_credentials)
+    # Skip file mounts and runtime setup if SSH is not desired
+    logger.debug(f'Skipping file mounts and runtime setup for {cluster_name!r}.')
 
     logger.info(f'{colorama.Fore.GREEN}Successfully provisioned cluster: '
                 f'{cluster_name}{colorama.Style.RESET_ALL}')
@@ -572,6 +457,7 @@ def post_provision_runtime_setup(
     with provision_logging.setup_provision_logging(log_dir):
         try:
             logger.debug(_TITLE.format('System Setup After Provision'))
+            logger.info(_TITLE.format('System Setup After Provision'))
             return _post_provision_setup(cloud_name,
                                          cluster_name,
                                          cluster_yaml=cluster_yaml,

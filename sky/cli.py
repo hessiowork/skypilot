@@ -3426,6 +3426,13 @@ def jobs():
     pass
 
 
+@jobs.command('print')
+@click.option('--custom-message', default='Hello World', help='Custom message to print')
+def jobs_print(custom_message):
+    """Prints a custom message."""
+    click.echo(custom_message)
+
+
 @jobs.command('launch', cls=_DocumentedCodeCommand)
 @click.argument('entrypoint',
                 required=True,
@@ -3846,6 +3853,7 @@ _add_command_alias(jobs, jobs_queue, new_group=spot)
 _add_command_alias(jobs, jobs_logs, new_group=spot)
 _add_command_alias(jobs, jobs_cancel, new_group=spot)
 _add_command_alias(jobs, jobs_dashboard, new_group=spot)
+_add_command_alias(jobs, jobs_print, new_group=spot)
 
 
 @cli.group(cls=_NaturalOrderGroup)
